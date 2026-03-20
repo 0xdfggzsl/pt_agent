@@ -141,40 +141,55 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ## 报告格式
 
+### 报告对比功能
+
+扫描完成后，报告会**同时展示初识发现和 LLM 验证后的结果对比**：
+
+| 阶段 | 数量 |
+|------|------|
+| 初识发现 | N 个 |
+| LLM 验证后 | M 个 |
+| 误报排除 | K 个 |
+
+真实漏洞和误报会**分别展示**，并附带 LLM 的验证理由。
+
 ### HTML 报告
 
-美观的网页报告，包含漏洞统计和详情。
+美观的网页报告，包含初识发现 vs 验证结果对比，真实漏洞和误报分开展示。
 
 ### JSON 报告
 
-结构化数据报告，适合程序处理：
+结构化数据报告，同时包含初识发现和验证结果：
 
 ```json
 {
-  "summary": {
-    "total": 5,
-    "high": 2,
-    "medium": 2,
-    "low": 1,
-    "verified": 4,
-    "false_positives": 1
+  "comparison": {
+    "raw_total": 10,
+    "verified_total": 4,
+    "false_positives": 6
   },
-  "findings": [
-    {
-      "url": "https://example.com",
-      "param": "q",
-      "payload": "<script>alert(1)</script>",
-      "severity": "high",
-      "is_false_positive": false,
-      "reason": "LLM验证为真实漏洞"
-    }
-  ]
+  "raw_findings": [...全部10个初识发现...],
+  "verified_findings": [...经LLM验证的4个真实漏洞...],
+  "summary": {
+    "high": 2,
+    "medium": 1,
+    "low": 1
+  }
 }
 ```
 
 ### Markdown 报告
 
-Markdown 格式，适合文档使用。
+Markdown 格式，适合文档使用，包含对比表格和分类详情。
+
+### 报告内容
+
+每个报告都包含：
+
+1. **扫描概览** - 目标、时间、扫描类型
+2. **结果对比** - 初识发现 vs LLM验证
+3. **真实漏洞详情** - URL、参数、Payload、验证理由
+4. **误报详情** - 被排除的误报及排除原因
 
 ## 项目结构
 
