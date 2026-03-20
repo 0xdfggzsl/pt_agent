@@ -5,19 +5,27 @@
 ## 功能特性
 
 - **智能路由**：大模型自动分析需求，选择合适的扫描工具
-- **多漏洞检测**：支持 XSS、SQL 注入等多种漏洞检测
+- **多漏洞检测**：支持 9 种 Web 漏洞检测
+- **LLM 误报过滤**：大模型验证每个发现，排除误报
+- **多格式报告**：HTML / JSON / Markdown 报告
 - **自然语言交互**：用日常对话方式下达扫描指令
-- **多模型支持**：OpenAI GPT、Claude、阿里 Qwen
+- **多模型支持**：OpenAI GPT / Claude / 阿里 Qwen
 - **持久化记忆**：保存扫描历史和用户偏好
 - **交互式认证**：支持 Cookie、Token、用户名密码多种认证方式
-- **HTML 报告**：生成美观的漏洞报告
 
 ## 支持的扫描类型
 
-| 扫描类型 | 说明 | Payload 数量 |
-|----------|------|--------------|
-| XSS | 跨站脚本漏洞 | 21+ |
-| SQL 注入 | SQL 注入漏洞 | 50+ |
+| 漏洞类型 | 命令关键词 | 严重程度 | 说明 |
+|----------|------------|----------|------|
+| XSS | `xss` | 高/中 | 跨站脚本攻击 |
+| SQL 注入 | `sql`, `注入` | 高 | 数据库注入攻击 |
+| SSRF | `ssrf` | 高 | 服务端请求伪造 |
+| 命令注入 | `命令`, `command` | 高 | OS 命令注入 |
+| 路径遍历 | `路径`, `traversal` | 中 | 文件路径遍历 |
+| XXE | `xxe` | 高 | XML 外部实体攻击 |
+| 敏感信息泄露 | `敏感`, `sensitive` | 中 | API 密钥、密码等泄露 |
+| CSRF | `csrf` | 中 | 跨站请求伪造 |
+| 开放重定向 | `重定向`, `redirect` | 低 | 钓鱼风险 |
 
 ## 安装
 
@@ -35,29 +43,27 @@ python main.py
 
 ## 使用方法
 
-### 基本扫描
+### 全面扫描
 
 ```
+> 全面检测 example.com
 > 扫描 example.com
-[*] 开始 XSS 扫描: https://example.com
-[+] XSS 扫描完成!
-    漏洞总数: 3
-    高危: 1 | 中危: 2 | 低危: 0
-    报告: ./reports/xss_report_xxx.html
-
-[*] 开始 SQL 扫描: https://example.com
-[+] SQL 扫描完成!
-    漏洞总数: 1
-    高危: 1 | 中危: 0 | 低危: 0
-    报告: ./reports/sql_report_xxx.html
 ```
 
 ### 指定扫描类型
 
 ```
 > 只扫 XSS
-> 只检测 SQL 注入
-> 全面检测网站
+> 检测 SQL 注入
+> 检测 SSRF 和 XXE
+> 检测敏感信息泄露
+```
+
+### 多格式报告
+
+```
+> 扫描 example.com，生成 JSON 报告
+> 扫描 example.com，生成 Markdown 报告
 ```
 
 ### 需要认证的网站
@@ -65,34 +71,9 @@ python main.py
 ```
 > 扫描需要登录的网站
 请提供登录信息：
-
-方式1: 用户名密码登录
   - 登录页面 URL
   - 用户名
   - 密码
-
-方式2: Cookie 认证
-  - 提供完整的 Cookie 字符串
-
-方式3: Bearer Token
-  - 提供 Token 值
-
-输入 "取消" 终止操作
-
-> https://example.com/login
-请输入用户名：
-> admin
-请输入密码：
-> ******
-[*] 开始 XSS 扫描...
-```
-
-### 使用 Cookie
-
-```
-> 用 Cookie 扫描
-> https://example.com
-> PHPSESSID=abc123; token=xyz789
 ```
 
 ### 其他命令
@@ -108,12 +89,31 @@ python main.py
 | 命令 | 说明 |
 |------|------|
 | `扫描 example.com` | 自动选择所有扫描器 |
+| `全面检测网站` | 扫描全部 9 种漏洞 |
 | `只扫 XSS` | 只扫描 XSS 漏洞 |
-| `检测 SQL 注入` | 只扫描 SQL 注入 |
-| `全面检测网站` | 自动选择所有扫描器 |
-| `扫描需要登录的网站` | 交互式输入登录信息 |
-| `用 Cookie 扫描` | 使用 Cookie 认证 |
-| `查看扫描历史` | 显示历史记录 |
+| `检测 SSRF 和 XXE` | 指定扫描特定漏洞 |
+| `检测敏感信息泄露` | 检测 API 密钥、密码等 |
+| `生成 JSON 报告` | 输出 JSON 格式 |
+| `扫描需要登录的网站` | 交互式认证 |
+
+## 工作流程
+
+```mermaid
+graph TD
+    User[用户输入] --> LLM[LLM 分析意图]
+    LLM --> Intent[解析意图]
+    Intent --> Check{需要认证?}
+    Check -->|是| Auth[收集认证信息]
+    Check -->|否| Router[智能路由]
+    Auth --> Router
+    Router --> Scanners[调用扫描器]
+    Scanners --> Verify[LLM 验证]
+    Verify --> FP{误报?}
+    FP -->|是| Mark[标记误报]
+    FP -->|否| Real[确认真实漏洞]
+    Mark --> Report[生成报告]
+    Real --> Report
+```
 
 ## 认证方式
 
@@ -138,46 +138,65 @@ PHPSESSID=abc123; user_token=xyz
 eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-## 工作原理
+## 报告格式
 
-```mermaid
-graph TD
-    User[用户输入] --> LLM[LLM 分析意图]
-    LLM --> Intent[解析意图]
-    Intent --> Check{需要认证?}
-    Check -->|是| Auth[收集认证信息]
-    Check -->|否| Router[智能路由]
-    Auth --> Router
-    Router --> XSS[XSS 扫描器]
-    Router --> SQL[SQL 扫描器]
-    XSS --> Report1[HTML 报告]
-    SQL --> Report2[HTML 报告]
-    Report1 --> User
-    Report2 --> User
+### HTML 报告
+
+美观的网页报告，包含漏洞统计和详情。
+
+### JSON 报告
+
+结构化数据报告，适合程序处理：
+
+```json
+{
+  "summary": {
+    "total": 5,
+    "high": 2,
+    "medium": 2,
+    "low": 1,
+    "verified": 4,
+    "false_positives": 1
+  },
+  "findings": [
+    {
+      "url": "https://example.com",
+      "param": "q",
+      "payload": "<script>alert(1)</script>",
+      "severity": "high",
+      "is_false_positive": false,
+      "reason": "LLM验证为真实漏洞"
+    }
+  ]
+}
 ```
+
+### Markdown 报告
+
+Markdown 格式，适合文档使用。
 
 ## 项目结构
 
 ```
 unified_agent/
-├── main.py                 # 入口
-├── requirements.txt        # 依赖
+├── main.py                    # 入口
+├── requirements.txt          # 依赖
 ├── agent/
-│   ├── core.py            # Agent 核心 + 意图解析
-│   ├── memory.py          # 记忆系统
-│   ├── llm/              # LLM 接口
+│   ├── core.py              # Agent 核心 + 意图解析 + 报告生成
+│   ├── memory.py            # 记忆系统
+│   ├── llm/                 # LLM 接口
 │   │   ├── base.py
 │   │   ├── openai.py
 │   │   ├── anthropic.py
 │   │   └── dashscope.py
-│   └── tools/             # 扫描工具
-│       └── scanner.py
+│   ├── tools/               # 扫描工具
+│   │   └── scanner.py
+│   └── scanner/
+│       └── detectors/
+│           └── security.py  # 多种漏洞检测器
 ├── config/
-│   └── models.json        # 模型配置
-└── data/                  # 数据存储
-    ├── memory.json         # 对话记忆
-    ├── preferences.json   # 用户偏好
-    └── history.json       # 扫描历史
+│   └── models.json          # 模型配置
+└── data/                    # 数据存储
 ```
 
 ## 环境变量
@@ -195,8 +214,8 @@ unified_agent/
 ```bash
 data/
 ├── memory.json       # 对话上下文
-├── preferences.json  # 用户偏好（默认模型等）
-└── history.json      # 扫描历史
+├── preferences.json  # 用户偏好
+└── history.json     # 扫描历史
 ```
 
 ## 免责声明
