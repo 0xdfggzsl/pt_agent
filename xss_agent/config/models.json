@@ -1,0 +1,47 @@
+{
+  "default_model": "gpt-4",
+  "models": {
+    "gpt-4": {
+      "provider": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "supports_streaming": true
+    },
+    "gpt-4-turbo": {
+      "provider": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "supports_streaming": true
+    },
+    "gpt-3.5-turbo": {
+      "provider": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "supports_streaming": true
+    },
+    "claude-3-opus": {
+      "provider": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "supports_streaming": true
+    },
+    "claude-3-sonnet": {
+      "provider": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "supports_streaming": true
+    },
+    "qwen-plus": {
+      "provider": "dashscope",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+      "supports_streaming": false
+    },
+    "qwen-turbo": {
+      "provider": "dashscope",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+      "supports_streaming": false
+    }
+  }
+}
