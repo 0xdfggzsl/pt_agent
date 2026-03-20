@@ -609,13 +609,19 @@ class Agent:
         results = []
         total_findings = {'total': 0, 'high': 0, 'medium': 0, 'low': 0}
         
+        self.scan_logger.info("=" * 60)
+        self.scan_logger.info("阶段1: 执行所有扫描器...")
+        
+        all_raw_findings = []
+        scanner_results = {}
+        
         for scan_type in scan_types:
             self.scan_logger.log_scanner_start(scan_type)
             
             tool = self.tool_registry.get(f'{scan_type}_scanner')
             if not tool:
-                results.append(f"[!] {scan_type} 扫描器不可用")
-                self.scan_logger.warning(f"{scan_type} 扫描器不可用")
+                results.append(f"[!] {scan_type}扫描器不可用")
+                self.scan_logger.warning(f"{scan_type}扫描器不可用")
                 continue
             
             try:
@@ -624,48 +630,10 @@ class Agent:
                 
                 if scan_result.success:
                     findings = scan_result.data.get('findings', [])
-                    
-                    self.scan_logger.log_llm_verify(len(findings))
-                    verified = await self.false_positive_filter.filter(findings, scan_type)
-                    
-                    verified_findings = verified.get('verified_findings', [])
-                    verified_count = len([f for f in verified_findings if not f.get('is_false_positive', False)])
-                    fp_count = len([f for f in verified_findings if f.get('is_false_positive', False)])
-                    
-                    self.scan_logger.log_llm_result(verified_count, fp_count)
-                    
-                    for f in verified_findings:
-                        if not f.get('is_false_positive', False):
-                            sev = f.get('original', {}).get('severity', 'low')
-                            if sev == 'high':
-                                total_findings['high'] += 1
-                            elif sev == 'medium':
-                                total_findings['medium'] += 1
-                            else:
-                                total_findings['low'] += 1
-                    total_findings['total'] += verified_count
-                    
-                    self.scan_logger.log_scanner_result(scan_type, len(findings), verified_count, fp_count)
-                    
-                    report_path = self.report_generator.generate_and_save(
-                        verified_findings,
-                        format=report_format,
-                        target_url=intent.url,
-                        scan_type=scan_type,
-                        scan_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        verified=True,
-                        output_dir='./reports'
-                    )
-                    self.scan_logger.log_report(report_path, report_format)
-                    
-                    results.append(
-                        f"[+] {scan_type.upper()}扫描完成!\n"
-                        f"    发现漏洞: {len(findings)}\n"
-                        f"    真实漏洞: {verified_count} | 误报: {fp_count}\n"
-                        f"    报告: {report_path}"
-                    )
-                    
-                    self._save_scan_history(intent.url, scan_type, verified_findings, intent.auth_info.get('type', 'none'))
+                    scanner_results[scan_type] = findings
+                    all_raw_findings.extend(findings)
+                    self.scan_logger.log_scanner_result(scan_type, len(findings), len(findings), 0)
+                    results.append(f"[+] {scan_type.upper()}扫描完成，发现 {len(findings)} 个潜在漏洞")
                 else:
                     results.append(f"[!] {scan_type}扫描失败: {scan_result.error}")
                     self.scan_logger.log_error(scan_type, scan_result.error)
@@ -673,9 +641,67 @@ class Agent:
                 results.append(f"[!] {scan_type}扫描异常: {str(e)}")
                 self.scan_logger.log_exception(scan_type, e)
         
+        if not all_raw_findings:
+            self.scan_logger.log_scan_complete(total_findings)
+            response = '\n\n'.join(results) + "\n\n未发现任何漏洞"
+            self.memory.add_entry('assistant', response)
+            return response
+        
+        self.scan_logger.info("=" * 60)
+        self.scan_logger.info(f"阶段2: 批量 LLM 验证...")
+        self.scan_logger.info(f"待验证漏洞总数: {len(all_raw_findings)}")
+        
+        verified_all = await self.false_positive_filter.filter(all_raw_findings, 'all')
+        verified_findings = verified_all.get('verified_findings', [])
+        
+        verified_count = len([f for f in verified_findings if not f.get('is_false_positive', False)])
+        fp_count = len([f for f in verified_findings if f.get('is_false_positive', False)])
+        
+        self.scan_logger.info(f"LLM 验证完成: {verified_count} 个真实漏洞, {fp_count} 个误报")
+        
+        self.scan_logger.info("=" * 60)
+        self.scan_logger.info("阶段3: 生成报告...")
+        
+        for f in verified_findings:
+            if not f.get('is_false_positive', False):
+                sev = f.get('original', {}).get('severity', 'low')
+                if sev == 'high':
+                    total_findings['high'] += 1
+                elif sev == 'medium':
+                    total_findings['medium'] += 1
+                else:
+                    total_findings['low'] += 1
+        total_findings['total'] = verified_count
+        
+        report_path = self.report_generator.generate_and_save(
+            verified_findings,
+            format=report_format,
+            target_url=intent.url,
+            scan_type='all',
+            scan_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            verified=True,
+            output_dir='./reports'
+        )
+        self.scan_logger.log_report(report_path, report_format)
+        
         self.scan_logger.log_scan_complete(total_findings)
         
+        results_summary = [
+            f"\n[+] 扫描完成!",
+            f"    总潜在漏洞: {len(all_raw_findings)}",
+            f"    真实漏洞: {verified_count}",
+            f"    误报数量: {fp_count}",
+            f"    高危: {total_findings['high']} | 中危: {total_findings['medium']} | 低危: {total_findings['low']}",
+            f"    报告: {report_path}",
+        ]
+        
+        if verified_all.get('summary'):
+            results_summary.append(f"    验证摘要: {verified_all['summary']}")
+        
         response = '\n\n'.join(results)
+        response += '\n\n' + '\n'.join(results_summary)
+        
+        self._save_scan_history(intent.url, 'all', verified_findings, intent.auth_info.get('type', 'none'))
         self.memory.add_entry('assistant', response)
         return response
     
