@@ -4,6 +4,7 @@ import json
 import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass
+from datetime import datetime
 
 @dataclass
 class Intent:
@@ -24,20 +25,12 @@ class IntentParser:
 - scan_types: 扫描类型列表 ["xss", "sql"]，空列表表示让助手自动选择
 - auth_info: 认证信息 {type: "none/cookie/bearer/login", login_url, username, password, cookie, token}
 - confidence: 置信度 0-1
-- needs_auth_info: 是否需要认证信息（如果用户提到登录但未提供详细信息，则为 true）
+- needs_auth_info: 是否需要认证信息
+- report_format: 报告格式 ["html", "json", "markdown", "pdf"]
 - raw_query: 原始查询
 
-认证类型：
-- none: 不需要认证
-- cookie: 使用 Cookie 认证
-- bearer: 使用 Bearer Token 认证
-- login: 使用用户名密码登录（需要 login_url, username, password）
-
 示例：
-"扫描 example.com" -> {"action": "scan", "url": "https://example.com", "scan_types": [], "auth_info": {"type": "none"}, "confidence": 0.95, "needs_auth_info": false}
-"扫描需要登录的网站" -> {"action": "scan", "url": null, "scan_types": [], "auth_info": {"type": "login"}, "confidence": 0.8, "needs_auth_info": true}
-"用 Cookie 扫描" -> {"action": "scan", "url": null, "scan_types": [], "auth_info": {"type": "cookie"}, "confidence": 0.8, "needs_auth_info": false}
-"只扫 XSS" -> {"action": "scan", "url": null, "scan_types": ["xss"], "auth_info": {"type": "none"}, "confidence": 0.8, "needs_auth_info": false}
+"扫描 example.com，生成 Markdown 报告" -> {"action": "scan", "url": "https://example.com", "scan_types": [], "auth_info": {"type": "none"}, "confidence": 0.95, "needs_auth_info": false, "report_format": "markdown"}
 """
     
     def __init__(self, llm):
@@ -89,6 +82,12 @@ class IntentParser:
         if 'sql' in user_input.lower() or '注入' in user_input:
             scan_types.append('sql')
         
+        report_format = 'html'
+        for fmt in ['markdown', 'json', 'pdf', 'html']:
+            if fmt in user_input.lower():
+                report_format = fmt
+                break
+        
         needs_auth = False
         auth_type = 'none'
         
@@ -115,11 +114,293 @@ class IntentParser:
             action=action,
             url=url,
             scan_types=scan_types,
-            auth_info={'type': auth_type},
+            auth_info={'type': auth_type, 'report_format': report_format},
             confidence=0.7 if scan_types else 0.6,
             raw_query=user_input,
             needs_auth_info=needs_auth
         )
+
+class FalsePositiveFilter:
+    SYSTEM_PROMPT = """你是一个专业的安全工程师，负责分析扫描结果，判断是否存在误报。
+
+给定一个漏洞发现列表，你需要：
+1. 分析每个漏洞是否可能是误报
+2. 考虑以下因素：
+   - 响应内容是否真的包含恶意 payload
+   - 是否有 WAF 或安全设备拦截
+   - 应用是否有额外的输入验证
+   - 漏洞是否确实可利用
+
+返回 JSON 格式：
+{
+  "verified_findings": [
+    {
+      "original": {...},
+      "is_false_positive": false,
+      "reason": "验证说明"
+    }
+  ],
+  "summary": "总体评估"
+}
+
+如果 is_false_positive 为 true，说明这个发现是误报。
+"""
+    
+    def __init__(self, llm):
+        self.llm = llm
+    
+    async def filter(self, findings: List[Dict], scan_type: str) -> Dict:
+        if not findings:
+            return {
+                'verified_findings': [],
+                'summary': '无漏洞发现'
+            }
+        
+        if not self.llm.api_key:
+            return {
+                'verified_findings': [{'original': f, 'is_false_positive': False, 'reason': '未启用LLM验证'} for f in findings],
+                'summary': f'发现 {len(findings)} 个潜在漏洞（未经 LLM 验证）'
+            }
+        
+        context = f"扫描类型: {scan_type.upper()}\n"
+        context += f"漏洞数量: {len(findings)}\n\n"
+        context += "漏洞详情：\n"
+        for i, f in enumerate(findings, 1):
+            context += f"\n{i}. URL: {f.get('url', 'N/A')}\n"
+            context += f"   参数: {f.get('param', 'N/A')}\n"
+            context += f"   Payload: {f.get('payload', 'N/A')}\n"
+            context += f"   类型: {f.get('type', 'N/A')}\n"
+            context += f"   严重程度: {f.get('severity', 'N/A')}\n"
+        
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": context}
+        ]
+        
+        try:
+            response = await self.llm.chat(messages)
+            data = self._extract_json(response)
+            if data:
+                return data
+        except Exception:
+            pass
+        
+        return {
+            'verified_findings': [{'original': f, 'is_false_positive': False, 'reason': '验证超时'} for f in findings],
+            'summary': f'发现 {len(findings)} 个潜在漏洞'
+        }
+    
+    def _extract_json(self, text: str) -> Optional[Dict]:
+        try:
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+        except Exception:
+            pass
+        return None
+
+class ReportGenerator:
+    def __init__(self):
+        self.formats = ['html', 'json', 'markdown']
+    
+    def generate(self, findings: List[Dict], format: str = 'html', **kwargs) -> str:
+        if format == 'json':
+            return self._generate_json(findings, **kwargs)
+        elif format == 'markdown':
+            return self._generate_markdown(findings, **kwargs)
+        else:
+            return self._generate_html(findings, **kwargs)
+    
+    def _generate_html(self, findings: List[Dict], **kwargs) -> str:
+        target_url = kwargs.get('target_url', 'N/A')
+        scan_type = kwargs.get('scan_type', 'N/A')
+        scan_time = kwargs.get('scan_time', 'N/A')
+        verified = kwargs.get('verified', False)
+        
+        high = len([f for f in findings if f.get('severity') == 'high'])
+        medium = len([f for f in findings if f.get('severity') == 'medium'])
+        low = len([f for f in findings if f.get('severity') == 'low'])
+        
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>安全扫描报告</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #f5f5f5; }}
+        .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        h1 {{ color: #333; border-bottom: 3px solid #667eea; padding-bottom: 10px; }}
+        .meta {{ color: #666; margin-bottom: 20px; }}
+        .summary {{ display: flex; gap: 20px; margin: 20px 0; }}
+        .stat {{ background: #f8f9fa; padding: 15px 25px; border-radius: 8px; text-align: center; }}
+        .stat-value {{ font-size: 28px; font-weight: bold; color: #333; }}
+        .stat-label {{ color: #666; font-size: 14px; }}
+        .finding {{ border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0; background: #fff5f5; border-radius: 4px; }}
+        .finding.false-positive {{ border-color: #28a745; background: #f5fff5; }}
+        .finding-header {{ display: flex; justify-content: space-between; margin-bottom: 10px; }}
+        .url {{ font-family: monospace; color: #333; word-break: break-all; }}
+        .badge {{ padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
+        .badge.high {{ background: #dc3545; color: white; }}
+        .badge.medium {{ background: #ffc107; color: #333; }}
+        .badge.low {{ background: #17a2b8; color: white; }}
+        .badge.verified {{ background: #28a745; color: white; }}
+        .badge.false {{ background: #6c757d; color: white; }}
+        .payload {{ background: #f8f9fa; padding: 10px; border-radius: 4px; font-family: monospace; margin: 10px 0; word-break: break-all; }}
+        .reason {{ color: #666; font-style: italic; margin-top: 10px; }}
+        .no-findings {{ text-align: center; padding: 40px; color: #28a745; font-size: 18px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>安全扫描报告</h1>
+        <div class="meta">
+            <p><strong>目标:</strong> {target_url}</p>
+            <p><strong>扫描类型:</strong> {scan_type}</p>
+            <p><strong>扫描时间:</strong> {scan_time}</p>
+            <p><strong>LLM验证:</strong> {'已启用' if verified else '未启用'}</p>
+        </div>
+        <div class="summary">
+            <div class="stat"><div class="stat-value">{len(findings)}</div><div class="stat-label">总漏洞</div></div>
+            <div class="stat"><div class="stat-value">{high}</div><div class="stat-label">高危</div></div>
+            <div class="stat"><div class="stat-value">{medium}</div><div class="stat-label">中危</div></div>
+            <div class="stat"><div class="stat-value">{low}</div><div class="stat-label">低危</div></div>
+        </div>
+"""
+        
+        if not findings:
+            html += '<div class="no-findings">未发现安全漏洞</div>'
+        else:
+            html += '<h2>漏洞详情</h2>'
+            for f in findings:
+                is_fp = f.get('is_false_positive', False)
+                orig = f.get('original', f)
+                html += f'<div class="finding {"false-positive" if is_fp else ""}">'
+                html += f'<div class="finding-header">'
+                html += f'<span class="url">{orig.get("url", "N/A")}</span>'
+                badge_class = orig.get('severity', 'low')
+                html += f'<span class="badge {badge_class}">{orig.get("severity", "N/A").upper()}</span>'
+                html += '</div>'
+                html += f'<div><strong>参数:</strong> {orig.get("param", "N/A")}</div>'
+                html += f'<div><strong>类型:</strong> {orig.get("type", "N/A")}</div>'
+                html += f'<div><strong>Payload:</strong></div>'
+                html += f'<div class="payload">{orig.get("payload", "N/A")}</div>'
+                if is_fp:
+                    html += f'<div class="reason">⚠️ 误报标记: {f.get("reason", "LLM判定为误报")}</div>'
+                else:
+                    html += f'<div class="reason">✓ 已验证: {f.get("reason", "LLM验证为真实漏洞")}</div>'
+                html += '</div>'
+        
+        html += """
+    </div>
+</body>
+</html>"""
+        return html
+    
+    def _generate_json(self, findings: List[Dict], **kwargs) -> str:
+        verified_list = []
+        for f in findings:
+            orig = f.get('original', f)
+            verified_list.append({
+                'url': orig.get('url'),
+                'param': orig.get('param'),
+                'payload': orig.get('payload'),
+                'type': orig.get('type'),
+                'severity': orig.get('severity'),
+                'is_false_positive': f.get('is_false_positive', False),
+                'reason': f.get('reason', '')
+            })
+        
+        report = {
+            'metadata': {
+                'target_url': kwargs.get('target_url', 'N/A'),
+                'scan_type': kwargs.get('scan_type', 'N/A'),
+                'scan_time': kwargs.get('scan_time', 'N/A'),
+                'llm_verified': kwargs.get('verified', False)
+            },
+            'summary': {
+                'total': len(findings),
+                'high': len([f for f in findings if f.get('original', {}).get('severity') == 'high']),
+                'medium': len([f for f in findings if f.get('original', {}).get('severity') == 'medium']),
+                'low': len([f for f in findings if f.get('original', {}).get('severity') == 'low']),
+                'verified': len([f for f in findings if not f.get('is_false_positive', False)]),
+                'false_positives': len([f for f in findings if f.get('is_false_positive', False)])
+            },
+            'findings': verified_list
+        }
+        return json.dumps(report, indent=2, ensure_ascii=False)
+    
+    def _generate_markdown(self, findings: List[Dict], **kwargs) -> str:
+        target_url = kwargs.get('target_url', 'N/A')
+        scan_type = kwargs.get('scan_type', 'N/A')
+        scan_time = kwargs.get('scan_time', 'N/A')
+        verified = kwargs.get('verified', False)
+        
+        md = f"""# 安全扫描报告
+
+## 基本信息
+
+| 项目 | 内容 |
+|------|------|
+| 目标 URL | {target_url} |
+| 扫描类型 | {scan_type} |
+| 扫描时间 | {scan_time} |
+| LLM 验证 | {'已启用' if verified else '未启用'} |
+
+## 漏洞统计
+
+- **总计**: {len(findings)} 个
+- **高危**: {len([f for f in findings if f.get('original', {}).get('severity') == 'high'])} 个
+- **中危**: {len([f for f in findings if f.get('original', {}).get('severity') == 'medium'])} 个
+- **低危**: {len([f for f in findings if f.get('original', {}).get('severity') == 'low'])} 个
+- **已验证**: {len([f for f in findings if not f.get('is_false_positive', False)])} 个
+- **误报**: {len([f for f in findings if f.get('is_false_positive', False)])} 个
+
+"""
+        
+        if not findings:
+            md += '## 结论\n\n✅ 未发现安全漏洞\n'
+        else:
+            md += '## 漏洞详情\n\n'
+            for i, f in enumerate(findings, 1):
+                orig = f.get('original', f)
+                is_fp = f.get('is_false_positive', False)
+                status = '⚠️ 误报' if is_fp else '✓ 真实漏洞'
+                md += f"""### {i}. {orig.get('type', 'N/A').upper()} - {orig.get('severity', 'N/A').upper()}
+
+**URL**: `{orig.get('url', 'N/A')}`
+
+**参数**: {orig.get('param', 'N/A')}
+
+**Payload**: 
+```
+{orig.get('payload', 'N/A')}
+```
+
+**状态**: {status}
+
+**原因**: {f.get('reason', 'N/A')}
+
+---
+
+"""
+        
+        return md
+    
+    def save(self, content: str, output_path: str):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return output_path
+    
+    def generate_and_save(self, findings: List[Dict], format: str, **kwargs) -> str:
+        content = self.generate(findings, format, **kwargs)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        scan_type = kwargs.get('scan_type', 'scan').upper()
+        ext = 'md' if format == 'markdown' else format
+        filename = f'{scan_type.lower()}_report_{timestamp}.{ext}'
+        output_dir = kwargs.get('output_dir', './reports')
+        output_path = os.path.join(output_dir, filename)
+        return self.save(content, output_path)
 
 class Agent:
     def __init__(self, model_name: str = None, api_key: str = None):
@@ -140,15 +421,18 @@ class Agent:
         
         self.tool_registry = get_registry()
         self.parser = IntentParser(self.llm)
-        self.pending_auth: Dict = {}
+        self.false_positive_filter = FalsePositiveFilter(self.llm)
+        self.report_generator = ReportGenerator()
+        self.pending_auth = {}
         
         self.system_prompt = """你是一个专业的网络安全扫描 AI 助手。
 
 你的职责：
 1. 理解用户的安全扫描需求
 2. 智能选择合适的扫描工具
-3. 提供专业的漏洞解释和修复建议
-4. 生成清晰的扫描报告
+3. 使用 LLM 验证扫描结果，排除误报
+4. 提供专业的漏洞解释和修复建议
+5. 生成多种格式的报告
 
 当用户提到需要登录的网站时，请询问：
 1. 登录页面 URL
@@ -163,6 +447,11 @@ class Agent:
 1. Cookie 认证：用户提供登录后的 Cookie 值
 2. Bearer Token：用户提供 API Token
 3. 用户名密码：提供登录页面 URL 和用户名密码
+
+报告格式：
+- HTML: 生成美观的网页报告
+- JSON: 生成结构化数据报告
+- Markdown: 生成 Markdown 格式报告
 
 保持专业、客观的态度，只扫描用户授权的目标。"""
     
@@ -202,21 +491,6 @@ class Agent:
             'intent': intent,
             'step': 'login_url'
         }
-        
-        self.memory.add_entry('assistant', """请提供登录信息：
-
-方式1: 用户名密码登录
-  - 登录页面 URL
-  - 用户名
-  - 密码
-
-方式2: Cookie 认证
-  - 请提供完整的 Cookie 字符串
-
-方式3: Bearer Token
-  - 请提供 Token 值
-
-输入 "取消" 终止操作""")
         
         return """请提供登录信息：
 
@@ -287,6 +561,7 @@ class Agent:
             intent.url = 'https://' + intent.url
         
         scan_types = intent.scan_types if intent.scan_types else ['xss', 'sql']
+        report_format = intent.auth_info.get('report_format', 'html')
         
         results = []
         for scan_type in scan_types:
@@ -299,20 +574,42 @@ class Agent:
             
             try:
                 auth_info = self._parse_auth_info(intent.auth_info)
-                result = await tool.scan(intent.url, **auth_info)
+                scan_result = await tool.scan(intent.url, **auth_info)
                 
-                if result.success:
-                    summary = result.data['summary']
+                if scan_result.success:
+                    findings = scan_result.data.get('findings', [])
+                    
+                    print(f"[*] 发现 {len(findings)} 个潜在漏洞，开始 LLM 验证...")
+                    verified = await self.false_positive_filter.filter(findings, scan_type)
+                    
+                    verified_findings = verified.get('verified_findings', [])
+                    verified_count = len([f for f in verified_findings if not f.get('is_false_positive', False)])
+                    fp_count = len([f for f in verified_findings if f.get('is_false_positive', False)])
+                    
+                    print(f"[*] LLM 验证完成: {verified_count} 个真实漏洞, {fp_count} 个误报")
+                    
+                    summary = verified.get('summary', '')
                     results.append(
                         f"[+] {scan_type.upper()} 扫描完成!\n"
-                        f"    漏洞总数: {summary['total']}\n"
-                        f"    高危: {summary['high']} | 中危: {summary['medium']} | 低危: {summary['low']}\n"
-                        f"    报告: {result.report_path}"
+                        f"    发现漏洞: {len(findings)}\n"
+                        f"    真实漏洞: {verified_count} | 误报: {fp_count}\n"
+                        f"    {summary}"
                     )
                     
-                    self._save_scan_history(intent.url, scan_type, result.data, intent.auth_info.get('type', 'none'))
+                    report_path = self.report_generator.generate_and_save(
+                        verified_findings,
+                        format=report_format,
+                        target_url=intent.url,
+                        scan_type=scan_type,
+                        scan_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        verified=True,
+                        output_dir='./reports'
+                    )
+                    results.append(f"    报告: {report_path}")
+                    
+                    self._save_scan_history(intent.url, scan_type, verified_findings, intent.auth_info.get('type', 'none'))
                 else:
-                    results.append(f"[!] {scan_type} 扫描失败: {result.error}")
+                    results.append(f"[!] {scan_type} 扫描失败: {scan_result.error}")
             except Exception as e:
                 results.append(f"[!] {scan_type} 扫描异常: {str(e)}")
         
@@ -344,9 +641,14 @@ class Agent:
         
         return result
     
-    def _save_scan_history(self, url: str, scan_type: str, data: Dict, auth_type: str):
+    def _save_scan_history(self, url: str, scan_type: str, findings: List[Dict], auth_type: str):
         from agent.memory import ScanHistory
-        summary = data.get('summary', {})
+        summary = {
+            'total': len(findings),
+            'high': len([f for f in findings if f.get('original', {}).get('severity') == 'high']),
+            'medium': len([f for f in findings if f.get('original', {}).get('severity') == 'medium']),
+            'low': len([f for f in findings if f.get('original', {}).get('severity') == 'low']),
+        }
         record = ScanHistory(
             url=url,
             scan_types=[scan_type],
@@ -387,19 +689,27 @@ class Agent:
    "只扫 XSS"
    "只检测 SQL 注入"
 
-3. 需要认证：
-   "扫描需要登录的网站"
-   （会提示输入登录信息）
+3. 生成不同格式报告：
+   "扫描 example.com，生成 JSON 报告"
+   "扫描 example.com，生成 Markdown 报告"
 
-4. 历史记录：
+4. 需要认证：
+   "扫描需要登录的网站"
+
+5. 历史记录：
    "查看扫描历史"
 
-5. 退出：
+6. 退出：
    "exit" 或 "quit"
 
 支持的扫描类型：
 - XSS (跨站脚本)
 - SQL 注入
+
+报告格式：
+- HTML: 美观网页报告（默认）
+- JSON: 结构化数据
+- Markdown: Markdown 格式
 
 认证方式：
 - Cookie: 提供登录后的 Cookie
