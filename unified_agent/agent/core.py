@@ -243,10 +243,18 @@ class ReportGenerator:
         scan_type = kwargs.get('scan_type', 'N/A')
         scan_time = kwargs.get('scan_time', 'N/A')
         verified = kwargs.get('verified', False)
+        raw_findings = kwargs.get('raw_findings', [])
         
         high = len([f for f in findings if f.get('severity') == 'high'])
         medium = len([f for f in findings if f.get('severity') == 'medium'])
         low = len([f for f in findings if f.get('severity') == 'low'])
+        
+        raw_high = len([f for f in raw_findings if f.get('severity') == 'high'])
+        raw_medium = len([f for f in raw_findings if f.get('severity') == 'medium'])
+        raw_low = len([f for f in raw_findings if f.get('severity') == 'low'])
+        
+        verified_count = len([f for f in findings if not f.get('is_false_positive', False)])
+        fp_count = len([f for f in findings if f.get('is_false_positive', False)])
         
         html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -255,26 +263,38 @@ class ReportGenerator:
     <title>安全扫描报告</title>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #f5f5f5; }}
-        .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
         h1 {{ color: #333; border-bottom: 3px solid #667eea; padding-bottom: 10px; }}
+        h2 {{ color: #333; margin-top: 30px; border-bottom: 2px solid #ddd; padding-bottom: 5px; }}
         .meta {{ color: #666; margin-bottom: 20px; }}
-        .summary {{ display: flex; gap: 20px; margin: 20px 0; }}
-        .stat {{ background: #f8f9fa; padding: 15px 25px; border-radius: 8px; text-align: center; }}
-        .stat-value {{ font-size: 28px; font-weight: bold; color: #333; }}
-        .stat-label {{ color: #666; font-size: 14px; }}
+        .summary {{ display: flex; gap: 15px; margin: 20px 0; flex-wrap: wrap; }}
+        .stat {{ background: #f8f9fa; padding: 15px 20px; border-radius: 8px; text-align: center; min-width: 100px; }}
+        .stat-value {{ font-size: 24px; font-weight: bold; color: #333; }}
+        .stat-label {{ color: #666; font-size: 12px; margin-top: 5px; }}
+        .stat.high .stat-value {{ color: #dc3545; }}
+        .stat.medium .stat-value {{ color: #ffc107; }}
+        .stat.low .stat-value {{ color: #17a2b8; }}
+        .stat.verified .stat-value {{ color: #28a745; }}
+        .stat.false-positive .stat-value {{ color: #6c757d; }}
         .finding {{ border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0; background: #fff5f5; border-radius: 4px; }}
-        .finding.false-positive {{ border-color: #28a745; background: #f5fff5; }}
+        .finding.verified {{ border-color: #dc3545; }}
+        .finding.false-positive {{ border-left-color: #6c757d; background: #f8f9fa; opacity: 0.7; }}
         .finding-header {{ display: flex; justify-content: space-between; margin-bottom: 10px; }}
-        .url {{ font-family: monospace; color: #333; word-break: break-all; }}
-        .badge {{ padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
-        .badge.high {{ background: #dc3545; color: white; }}
+        .url {{ font-family: monospace; color: #333; word-break: break-all; flex: 1; }}
+        .badge {{ padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; }}
+        .badge.high {{ background: #dc3545; }}
         .badge.medium {{ background: #ffc107; color: #333; }}
-        .badge.low {{ background: #17a2b8; color: white; }}
-        .badge.verified {{ background: #28a745; color: white; }}
-        .badge.false {{ background: #6c757d; color: white; }}
+        .badge.low {{ background: #17a2b8; }}
+        .badge.verified {{ background: #28a745; }}
+        .badge.false {{ background: #6c757d; }}
+        .badge.type {{ background: #667eea; }}
         .payload {{ background: #f8f9fa; padding: 10px; border-radius: 4px; font-family: monospace; margin: 10px 0; word-break: break-all; }}
-        .reason {{ color: #666; font-style: italic; margin-top: 10px; }}
+        .reason {{ color: #666; font-style: italic; margin-top: 10px; padding: 8px; background: #fff; border-radius: 4px; }}
+        .reason.false {{ background: #ffeaa7; }}
         .no-findings {{ text-align: center; padding: 40px; color: #28a745; font-size: 18px; }}
+        .comparison {{ background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }}
+        .comparison h3 {{ margin-top: 0; color: #333; }}
+        .arrow {{ text-align: center; font-size: 24px; margin: 10px 0; color: #667eea; }}
     </style>
 </head>
 <body>
@@ -284,38 +304,66 @@ class ReportGenerator:
             <p><strong>目标:</strong> {target_url}</p>
             <p><strong>扫描类型:</strong> {scan_type}</p>
             <p><strong>扫描时间:</strong> {scan_time}</p>
-            <p><strong>LLM验证:</strong> {'已启用' if verified else '未启用'}</p>
         </div>
+        
+        <h2>扫描结果概览</h2>
         <div class="summary">
-            <div class="stat"><div class="stat-value">{len(findings)}</div><div class="stat-label">总漏洞</div></div>
-            <div class="stat"><div class="stat-value">{high}</div><div class="stat-label">高危</div></div>
-            <div class="stat"><div class="stat-value">{medium}</div><div class="stat-label">中危</div></div>
-            <div class="stat"><div class="stat-value">{low}</div><div class="stat-label">低危</div></div>
+            <div class="stat"><div class="stat-value">{len(raw_findings)}</div><div class="stat-label">初识发现</div></div>
+            <div class="stat"><div class="stat-value">{verified_count}</div><div class="stat-label verified">真实漏洞</div></div>
+            <div class="stat"><div class="stat-value">{fp_count}</div><div class="stat-label false-positive">误报排除</div></div>
+            <div class="stat high"><div class="stat-value">{high}</div><div class="stat-label">高危</div></div>
+            <div class="stat medium"><div class="stat-value">{medium}</div><div class="stat-label">中危</div></div>
+            <div class="stat low"><div class="stat-value">{low}</div><div class="stat-label">低危</div></div>
         </div>
+        
+        <div class="comparison">
+            <h3>📊 初识发现 → LLM验证后结果</h3>
+            <p>初识发现: <strong>{len(raw_findings)}</strong> 个漏洞 → 
+            LLM验证后: <strong>{verified_count}</strong> 个真实漏洞，
+            <strong>{fp_count}</strong> 个误报已排除</p>
+        </div>
+        
+        <h2>LLM验证后的漏洞 (真实漏洞)</h2>
 """
         
-        if not findings:
-            html += '<div class="no-findings">未发现安全漏洞</div>'
+        if verified_count == 0:
+            html += '<div class="no-findings">✅ 未发现真实漏洞</div>'
         else:
-            html += '<h2>漏洞详情</h2>'
+            html += '<div class="findings-list">'
             for f in findings:
-                is_fp = f.get('is_false_positive', False)
-                orig = f.get('original', f)
-                html += f'<div class="finding {"false-positive" if is_fp else ""}">'
-                html += f'<div class="finding-header">'
-                html += f'<span class="url">{orig.get("url", "N/A")}</span>'
-                badge_class = orig.get('severity', 'low')
-                html += f'<span class="badge {badge_class}">{orig.get("severity", "N/A").upper()}</span>'
-                html += '</div>'
-                html += f'<div><strong>参数:</strong> {orig.get("param", "N/A")}</div>'
-                html += f'<div><strong>类型:</strong> {orig.get("type", "N/A")}</div>'
-                html += f'<div><strong>Payload:</strong></div>'
-                html += f'<div class="payload">{orig.get("payload", "N/A")}</div>'
-                if is_fp:
-                    html += f'<div class="reason">⚠️ 误报标记: {f.get("reason", "LLM判定为误报")}</div>'
-                else:
-                    html += f'<div class="reason">✓ 已验证: {f.get("reason", "LLM验证为真实漏洞")}</div>'
-                html += '</div>'
+                if not f.get('is_false_positive', False):
+                    orig = f.get('original', f)
+                    html += f'<div class="finding verified">'
+                    html += f'<div class="finding-header">'
+                    html += f'<span class="url">{orig.get("url", "N/A")}</span>'
+                    html += f'<span class="badge {orig.get("severity", "low")}">{orig.get("severity", "N/A").upper()}</span>'
+                    html += '</div>'
+                    html += f'<div><span class="badge type">{orig.get("type", "N/A")}</span></div>'
+                    html += f'<div><strong>参数:</strong> {orig.get("param", "N/A")}</div>'
+                    html += f'<div><strong>Payload:</strong></div>'
+                    html += f'<div class="payload">{orig.get("payload", "N/A")}</div>'
+                    html += f'<div class="reason">✓ LLM验证: {f.get("reason", "已验证为真实漏洞")}</div>'
+                    html += '</div>'
+            html += '</div>'
+        
+        if fp_count > 0:
+            html += '<h2>误报标记的漏洞 (已排除)</h2>'
+            html += '<div class="findings-list">'
+            for f in findings:
+                if f.get('is_false_positive', False):
+                    orig = f.get('original', f)
+                    html += f'<div class="finding false-positive">'
+                    html += f'<div class="finding-header">'
+                    html += f'<span class="url">{orig.get("url", "N/A")}</span>'
+                    html += f'<span class="badge false>误报</span>'
+                    html += '</div>'
+                    html += f'<div><span class="badge type">{orig.get("type", "N/A")}</span></div>'
+                    html += f'<div><strong>参数:</strong> {orig.get("param", "N/A")}</div>'
+                    html += f'<div><strong>Payload:</strong></div>'
+                    html += f'<div class="payload">{orig.get("payload", "N/A")}</div>'
+                    html += f'<div class="reason false">⚠️ {f.get("reason", "LLM判定为误报")}</div>'
+                    html += '</div>'
+            html += '</div>'
         
         html += """
     </div>
@@ -324,6 +372,8 @@ class ReportGenerator:
         return html
     
     def _generate_json(self, findings: List[Dict], **kwargs) -> str:
+        raw_findings = kwargs.get('raw_findings', findings)
+        
         verified_list = []
         for f in findings:
             orig = f.get('original', f)
@@ -337,13 +387,30 @@ class ReportGenerator:
                 'reason': f.get('reason', '')
             })
         
+        raw_list = []
+        for f in raw_findings:
+            raw_list.append({
+                'url': f.get('url'),
+                'param': f.get('param'),
+                'payload': f.get('payload'),
+                'type': f.get('type'),
+                'severity': f.get('severity'),
+            })
+        
         report = {
             'metadata': {
                 'target_url': kwargs.get('target_url', 'N/A'),
                 'scan_type': kwargs.get('scan_type', 'N/A'),
                 'scan_time': kwargs.get('scan_time', 'N/A'),
-                'llm_verified': kwargs.get('verified', False)
+                'llm_verified': True
             },
+            'comparison': {
+                'raw_total': len(raw_findings),
+                'verified_total': len([f for f in findings if not f.get('is_false_positive', False)]),
+                'false_positives': len([f for f in findings if f.get('is_false_positive', False)])
+            },
+            'raw_findings': raw_list,
+            'verified_findings': verified_list,
             'summary': {
                 'total': len(findings),
                 'high': len([f for f in findings if f.get('original', {}).get('severity') == 'high']),
@@ -351,18 +418,20 @@ class ReportGenerator:
                 'low': len([f for f in findings if f.get('original', {}).get('severity') == 'low']),
                 'verified': len([f for f in findings if not f.get('is_false_positive', False)]),
                 'false_positives': len([f for f in findings if f.get('is_false_positive', False)])
-            },
-            'findings': verified_list
+            }
         }
         return json.dumps(report, indent=2, ensure_ascii=False)
-    
-    def _generate_markdown(self, findings: List[Dict], **kwargs) -> str:
-        target_url = kwargs.get('target_url', 'N/A')
-        scan_type = kwargs.get('scan_type', 'N/A')
-        scan_time = kwargs.get('scan_time', 'N/A')
-        verified = kwargs.get('verified', False)
         
-        md = f"""# 安全扫描报告
+        def _generate_markdown(self, findings: List[Dict], **kwargs) -> str:
+            target_url = kwargs.get('target_url', 'N/A')
+            scan_type = kwargs.get('scan_type', 'N/A')
+            scan_time = kwargs.get('scan_time', 'N/A')
+            raw_findings = kwargs.get('raw_findings', [])
+            
+            verified_list = [f for f in findings if not f.get('is_false_positive', False)]
+            fp_list = [f for f in findings if f.get('is_false_positive', False)]
+            
+            md = f"""# 安全扫描报告
 
 ## 基本信息
 
@@ -371,28 +440,30 @@ class ReportGenerator:
 | 目标 URL | {target_url} |
 | 扫描类型 | {scan_type} |
 | 扫描时间 | {scan_time} |
-| LLM 验证 | {'已启用' if verified else '未启用'} |
+
+## 扫描结果对比
+
+| 阶段 | 数量 |
+|------|------|
+| 初识发现 | {len(raw_findings)} 个 |
+| LLM验证后 | {len(verified_list)} 个 |
+| 误报排除 | {len(fp_list)} 个 |
 
 ## 漏洞统计
 
-- **总计**: {len(findings)} 个
-- **高危**: {len([f for f in findings if f.get('original', {}).get('severity') == 'high'])} 个
-- **中危**: {len([f for f in findings if f.get('original', {}).get('severity') == 'medium'])} 个
-- **低危**: {len([f for f in findings if f.get('original', {}).get('severity') == 'low'])} 个
-- **已验证**: {len([f for f in findings if not f.get('is_false_positive', False)])} 个
-- **误报**: {len([f for f in findings if f.get('is_false_positive', False)])} 个
+- **高危**: {len([f for f in verified_list if f.get('original', {}).get('severity') == 'high'])} 个
+- **中危**: {len([f for f in verified_list if f.get('original', {}).get('severity') == 'medium'])} 个
+- **低危**: {len([f for f in verified_list if f.get('original', {}).get('severity') == 'low'])} 个
 
 """
-        
-        if not findings:
-            md += '## 结论\n\n✅ 未发现安全漏洞\n'
-        else:
-            md += '## 漏洞详情\n\n'
-            for i, f in enumerate(findings, 1):
-                orig = f.get('original', f)
-                is_fp = f.get('is_false_positive', False)
-                status = '⚠️ 误报' if is_fp else '✓ 真实漏洞'
-                md += f"""### {i}. {orig.get('type', 'N/A').upper()} - {orig.get('severity', 'N/A').upper()}
+            
+            if not verified_list:
+                md += '## 结论\n\n✅ 未发现真实漏洞\n'
+            else:
+                md += '## 真实漏洞详情\n\n'
+                for i, f in enumerate(verified_list, 1):
+                    orig = f.get('original', f)
+                    md += f"""### {i}. {orig.get('type', 'N/A').upper()} - {orig.get('severity', 'N/A').upper()}
 
 **URL**: `{orig.get('url', 'N/A')}`
 
@@ -403,15 +474,34 @@ class ReportGenerator:
 {orig.get('payload', 'N/A')}
 ```
 
-**状态**: {status}
-
-**原因**: {f.get('reason', 'N/A')}
+**LLM验证**: ✓ {f.get('reason', '已验证为真实漏洞')}
 
 ---
 
 """
-        
-        return md
+                
+                if fp_list:
+                    md += '## 误报排除详情\n\n'
+                    for i, f in enumerate(fp_list, 1):
+                        orig = f.get('original', f)
+                        md += f"""### {i}. {orig.get('type', 'N/A').upper()}
+
+**URL**: `{orig.get('url', 'N/A')}`
+
+**参数**: {orig.get('param', 'N/A')}
+
+**Payload**: 
+```
+{orig.get('payload', 'N/A')}
+```
+
+**LLM判定**: ⚠️ {f.get('reason', '判定为误报')}
+
+---
+
+"""
+            
+            return md
     
     def save(self, content: str, output_path: str):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -680,6 +770,7 @@ class Agent:
             scan_type='all',
             scan_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             verified=True,
+            raw_findings=all_raw_findings,
             output_dir='./reports'
         )
         self.scan_logger.log_report(report_path, report_format)
