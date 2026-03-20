@@ -426,7 +426,7 @@ class ReportGenerator:
         return self.save(content, output_path)
 
 class Agent:
-    def __init__(self, model_name: str = None, api_key: str = None):
+    def __init__(self, model_name: str = None, api_key: str = None, log_dir: str = './logs'):
         from agent.llm import LLMFactory
         from agent.memory import MemoryStore
         from agent.tools import get_registry
@@ -447,6 +447,7 @@ class Agent:
         self.false_positive_filter = FalsePositiveFilter(self.llm)
         self.report_generator = ReportGenerator()
         self.pending_auth = {}
+        self.scan_logger = None
         
         self.system_prompt = """你是一个专业的网络安全扫描 AI 助手。
 
@@ -588,15 +589,29 @@ class Agent:
         if 'all' in scan_types:
             scan_types = self.tool_registry.get_all_names()
         
+        from agent.logger import ScanLogger
+        self.scan_logger = ScanLogger()
+        self.scan_logger.log_scan_start(intent.url, scan_types)
+        self.scan_logger.log_intent({
+            'action': intent.action,
+            'url': intent.url,
+            'scan_types': scan_types,
+            'auth_info': intent.auth_info
+        })
+        self.scan_logger.log_auth(intent.auth_info.get('type', 'none'), intent.needs_auth_info)
+        
         report_format = intent.auth_info.get('report_format', 'html')
         
         results = []
+        total_findings = {'total': 0, 'high': 0, 'medium': 0, 'low': 0}
+        
         for scan_type in scan_types:
-            print(f"\n[*] 开始 {scan_type.upper()} 扫描: {intent.url}")
+            self.scan_logger.log_scanner_start(scan_type)
             
             tool = self.tool_registry.get(f'{scan_type}_scanner')
             if not tool:
                 results.append(f"[!] {scan_type} 扫描器不可用")
+                self.scan_logger.warning(f"{scan_type} 扫描器不可用")
                 continue
             
             try:
@@ -606,22 +621,27 @@ class Agent:
                 if scan_result.success:
                     findings = scan_result.data.get('findings', [])
                     
-                    print(f"[*] 发现 {len(findings)} 个潜在漏洞，开始 LLM 验证...")
+                    self.scan_logger.log_llm_verify(len(findings))
                     verified = await self.false_positive_filter.filter(findings, scan_type)
                     
                     verified_findings = verified.get('verified_findings', [])
                     verified_count = len([f for f in verified_findings if not f.get('is_false_positive', False)])
                     fp_count = len([f for f in verified_findings if f.get('is_false_positive', False)])
                     
-                    print(f"[*] LLM 验证完成: {verified_count} 个真实漏洞, {fp_count} 个误报")
+                    self.scan_logger.log_llm_result(verified_count, fp_count)
                     
-                    summary = verified.get('summary', '')
-                    results.append(
-                        f"[+] {scan_type.upper()} 扫描完成!\n"
-                        f"    发现漏洞: {len(findings)}\n"
-                        f"    真实漏洞: {verified_count} | 误报: {fp_count}\n"
-                        f"    {summary}"
-                    )
+                    for f in verified_findings:
+                        if not f.get('is_false_positive', False):
+                            sev = f.get('original', {}).get('severity', 'low')
+                            if sev == 'high':
+                                total_findings['high'] += 1
+                            elif sev == 'medium':
+                                total_findings['medium'] += 1
+                            else:
+                                total_findings['low'] += 1
+                    total_findings['total'] += verified_count
+                    
+                    self.scan_logger.log_scanner_result(scan_type, len(findings), verified_count, fp_count)
                     
                     report_path = self.report_generator.generate_and_save(
                         verified_findings,
@@ -632,13 +652,24 @@ class Agent:
                         verified=True,
                         output_dir='./reports'
                     )
-                    results.append(f"    报告: {report_path}")
+                    self.scan_logger.log_report(report_path, report_format)
+                    
+                    results.append(
+                        f"[+] {scan_type.upper()}扫描完成!\n"
+                        f"    发现漏洞: {len(findings)}\n"
+                        f"    真实漏洞: {verified_count} | 误报: {fp_count}\n"
+                        f"    报告: {report_path}"
+                    )
                     
                     self._save_scan_history(intent.url, scan_type, verified_findings, intent.auth_info.get('type', 'none'))
                 else:
-                    results.append(f"[!] {scan_type} 扫描失败: {scan_result.error}")
+                    results.append(f"[!] {scan_type}扫描失败: {scan_result.error}")
+                    self.scan_logger.log_error(scan_type, scan_result.error)
             except Exception as e:
-                results.append(f"[!] {scan_type} 扫描异常: {str(e)}")
+                results.append(f"[!] {scan_type}扫描异常: {str(e)}")
+                self.scan_logger.log_exception(scan_type, e)
+        
+        self.scan_logger.log_scan_complete(total_findings)
         
         response = '\n\n'.join(results)
         self.memory.add_entry('assistant', response)
