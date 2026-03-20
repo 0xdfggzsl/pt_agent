@@ -427,3 +427,222 @@ class OpenRedirectDetector(BaseDetector):
             location = response.headers.get('Location', '')
             return payload in location or 'evil' in location.lower()
         return False
+
+class PathParameterDetector(BaseDetector):
+    """路径参数检测器 - 测试 URL 路径中的数字/ID 参数"""
+    name = "path_parameter"
+    description = "路径参数注入"
+    
+    PATH_PAYLOADS = {
+        'xss': [
+            "<script>alert(1)</script>",
+            "<img src=x onerror=alert(1)>",
+            "javascript:alert(1)",
+        ],
+        'sql': [
+            "' OR '1'='1",
+            "1' UNION SELECT NULL--",
+            "'; DROP TABLE users--",
+        ],
+        'command': [
+            "; whoami",
+            "| cat /etc/passwd",
+            "&& ls",
+        ],
+        'path': [
+            "../../../etc/passwd",
+            "..%2F..%2F..%2Fetc%2Fpasswd",
+        ],
+    }
+    
+    def _extract_path_params(self, url: str) -> List[Dict]:
+        """提取 URL 路径中的数字/ID 参数"""
+        parsed = urlparse(url)
+        path = parsed.path
+        parts = path.split('/')
+        params = []
+        
+        for i, part in enumerate(parts):
+            if part.isdigit() or self._looks_like_id(part):
+                param_name = f"path_param_{i}"
+                params.append({
+                    'name': param_name,
+                    'value': part,
+                    'position': i,
+                    'original': part
+                })
+        
+        return params
+    
+    def _looks_like_id(self, s: str) -> bool:
+        """判断是否像 ID 或敏感标识符"""
+        patterns = [
+            r'^[a-z]+_\d+$',      # user_123
+            r'^\d+_[a-z]+$',      # 123_user
+            r'^[a-z]{3,}_[a-z]{3,}$',  # user_profile
+            r'^[A-Z][a-z]+[A-Z]',  # userId
+        ]
+        return any(re.match(p, s) for p in patterns)
+    
+    async def scan(self, url: str, **kwargs) -> Dict:
+        await self.init_client()
+        try:
+            path_params = self._extract_path_params(url)
+            
+            for param_info in path_params:
+                original_value = param_info['original']
+                position = param_info['position']
+                
+                for vuln_type, payloads in self.PATH_PAYLOADS.items():
+                    for payload in payloads:
+                        test_url = self._inject_path_param(url, position, payload)
+                        try:
+                            response = await self.client.get(test_url)
+                            
+                            if self._check_vulnerability(response, payload, vuln_type):
+                                finding = self.create_finding(
+                                    url=url,
+                                    param=f"PATH[{position}]={original_value}",
+                                    payload=payload,
+                                    vuln_type=f'path_{vuln_type}',
+                                    severity=self._get_severity(vuln_type),
+                                    description=f'路径参数注入 ({vuln_type})，参数位置: {original_value}'
+                                )
+                                self.findings.append(finding)
+                        except Exception:
+                            continue
+        finally:
+            await self.close()
+        
+        return {'findings': self.findings, 'summary': self.get_summary()}
+    
+    def _inject_path_param(self, url: str, position: int, payload: str) -> str:
+        """将 payload 注入到路径的指定位置"""
+        parsed = urlparse(url)
+        parts = parsed.path.split('/')
+        
+        if position < len(parts):
+            parts[position] = payload
+        
+        new_path = '/'.join(parts)
+        return urlunparse((
+            parsed.scheme, parsed.netloc, new_path,
+            parsed.params, parsed.query, parsed.fragment
+        ))
+    
+    def _check_vulnerability(self, response, payload: str, vuln_type: str) -> bool:
+        """检查响应是否包含漏洞特征"""
+        content = response.text.lower()
+        
+        if vuln_type == 'xss':
+            return payload in content or '<script>' in content or 'alert' in content
+        elif vuln_type == 'sql':
+            sql_indicators = ['sql syntax', 'mysql', 'postgresql', 'error', 'warning']
+            return any(ind in content for ind in sql_indicators)
+        elif vuln_type == 'command':
+            cmd_indicators = ['root:', 'bin:', 'daemon:', 'www-data:']
+            return any(ind in content for ind in cmd_indicators)
+        elif vuln_type == 'path':
+            path_indicators = ['root:x:', '[boot loader]', 'apache', 'nginx']
+            return any(ind in content for ind in path_indicators)
+        
+        return False
+    
+    def _get_severity(self, vuln_type: str) -> str:
+        severities = {
+            'xss': 'high',
+            'sql': 'high',
+            'command': 'high',
+            'path': 'medium',
+        }
+        return severities.get(vuln_type, 'medium')
+
+class HeaderInjectionDetector(BaseDetector):
+    """Header 注入检测器 - 测试 HTTP Header 中的注入"""
+    name = "header_injection"
+    description = "Header 注入"
+    
+    HEADER_PAYLOADS = {
+        'xss': [
+            "<script>alert(1)</script>",
+            "<img src=x onerror=alert(1)>",
+            "javascript:alert(1)",
+        ],
+        'sql': [
+            "' OR '1'='1",
+            "1' UNION SELECT NULL--",
+        ],
+        'crlf': [
+            "\r\nX-Injected-Header: test",
+            "%0d%0aX-Injected-Header: test",
+            "\r\nSet-Cookie: evil=test",
+        ],
+        'cache_poison': [
+            "\r\nX-Forwarded-For: 127.0.0.1",
+            "\r\nX-Real-IP: 127.0.0.1",
+        ],
+    }
+    
+    TEST_HEADERS = [
+        'X-Forwarded-For',
+        'X-Real-IP',
+        'X-Custom-IP',
+        'Referer',
+        'User-Agent',
+        'X-Api-Version',
+    ]
+    
+    async def scan(self, url: str, **kwargs) -> Dict:
+        await self.init_client()
+        try:
+            for header_name in self.TEST_HEADERS:
+                for vuln_type, payloads in self.HEADER_PAYLOADS.items():
+                    for payload in payloads:
+                        try:
+                            response = await self.client.get(
+                                url,
+                                headers={header_name: payload}
+                            )
+                            
+                            if self._check_vulnerability(response, payload, vuln_type):
+                                finding = self.create_finding(
+                                    url=url,
+                                    param=f"Header[{header_name}]",
+                                    payload=payload,
+                                    vuln_type=f'header_{vuln_type}',
+                                    severity=self._get_severity(vuln_type),
+                                    description=f'Header 注入漏洞 ({vuln_type})'
+                                )
+                                self.findings.append(finding)
+                        except Exception:
+                            continue
+        finally:
+            await self.close()
+        
+        return {'findings': self.findings, 'summary': self.get_summary()}
+    
+    def _check_vulnerability(self, response, payload: str, vuln_type: str) -> bool:
+        """检查响应是否包含漏洞特征"""
+        content = response.text.lower()
+        headers_str = str(response.headers).lower()
+        
+        if vuln_type == 'xss':
+            return payload in content or 'script' in content
+        elif vuln_type == 'sql':
+            sql_indicators = ['sql syntax', 'mysql', 'postgresql', 'error', 'warning']
+            return any(ind in content for ind in sql_indicators)
+        elif vuln_type == 'crlf':
+            return payload in headers_str
+        elif vuln_type == 'cache_poison':
+            return '127.0.0.1' in headers_str
+        
+        return False
+    
+    def _get_severity(self, vuln_type: str) -> str:
+        severities = {
+            'xss': 'high',
+            'sql': 'high',
+            'crlf': 'medium',
+            'cache_poison': 'medium',
+        }
+        return severities.get(vuln_type, 'medium')

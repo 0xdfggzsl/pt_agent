@@ -239,6 +239,46 @@ class OpenRedirectTool(ScannerTool):
         except Exception as e:
             return ScanResult(success=False, scan_type='open_redirect', data=None, error=str(e))
 
+class PathParameterTool(ScannerTool):
+    name = "path_parameter_scanner"
+    description = "URL路径参数注入扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import PathParameterDetector
+            
+            detector = PathParameterDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='path_parameter',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='path_parameter', data=None, error=str(e))
+
+class HeaderInjectionTool(ScannerTool):
+    name = "header_injection_scanner"
+    description = "HTTP Header注入扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import HeaderInjectionDetector
+            
+            detector = HeaderInjectionDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='header_injection',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='header_injection', data=None, error=str(e))
+
 ALL_SCANNERS = {
     'xss': XSSTool(),
     'sql': SQLTool(),
@@ -249,6 +289,8 @@ ALL_SCANNERS = {
     'sensitive_info': SensitiveInfoTool(),
     'csrf': CSRFDetectorTool(),
     'open_redirect': OpenRedirectTool(),
+    'path_parameter': PathParameterTool(),
+    'header_injection': HeaderInjectionTool(),
 }
 
 ALL_VULN_TYPES = list(ALL_SCANNERS.keys())

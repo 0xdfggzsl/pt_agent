@@ -100,6 +100,10 @@ class IntentParser:
             scan_types.append('csrf')
         if '重定向' in user_input or 'redirect' in user_input.lower():
             scan_types.append('open_redirect')
+        if '路径参数' in user_input or 'path_param' in user_input.lower():
+            scan_types.append('path_parameter')
+        if 'header' in user_input.lower() or '头部' in user_input or 'Header' in user_input:
+            scan_types.append('header_injection')
         if '全面' in user_input or 'all' in user_input.lower():
             scan_types = ['all']
         if not scan_types:
