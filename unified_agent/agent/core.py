@@ -22,7 +22,9 @@ class IntentParser:
 分析用户输入，返回 JSON 格式的意图：
 - action: 动作 (scan, help, history, setting, explain)
 - url: 目标 URL (如果有)
-- scan_types: 扫描类型列表 ["xss", "sql"]，空列表表示让助手自动选择
+- scan_types: 扫描类型列表，可选值：
+  ["xss", "sql", "ssrf", "command_injection", "path_traversal", "xxe", "sensitive_info", "csrf", "open_redirect", "all"]
+  空列表或["all"]表示让助手自动选择所有扫描器
 - auth_info: 认证信息 {type: "none/cookie/bearer/login", login_url, username, password, cookie, token}
 - confidence: 置信度 0-1
 - needs_auth_info: 是否需要认证信息
@@ -30,7 +32,10 @@ class IntentParser:
 - raw_query: 原始查询
 
 示例：
-"扫描 example.com，生成 Markdown 报告" -> {"action": "scan", "url": "https://example.com", "scan_types": [], "auth_info": {"type": "none"}, "confidence": 0.95, "needs_auth_info": false, "report_format": "markdown"}
+"扫描 example.com，生成 Markdown 报告" -> {"action": "scan", "url": "https://example.com", "scan_types": ["all"], "auth_info": {"type": "none"}, "confidence": 0.95, "needs_auth_info": false, "report_format": "markdown"}
+"全面检测网站" -> {"action": "scan", "url": null, "scan_types": ["all"], ...}
+"只检测 XSS 和 SQL" -> {"action": "scan", "scan_types": ["xss", "sql"], ...}
+"检测 SSRF" -> {"action": "scan", "scan_types": ["ssrf"], ...}
 """
     
     def __init__(self, llm):
@@ -81,6 +86,24 @@ class IntentParser:
             scan_types.append('xss')
         if 'sql' in user_input.lower() or '注入' in user_input:
             scan_types.append('sql')
+        if 'ssrf' in user_input.lower():
+            scan_types.append('ssrf')
+        if '命令' in user_input or 'command' in user_input.lower():
+            scan_types.append('command_injection')
+        if '路径' in user_input or 'traversal' in user_input.lower() or '遍历' in user_input:
+            scan_types.append('path_traversal')
+        if 'xxe' in user_input.lower():
+            scan_types.append('xxe')
+        if '敏感' in user_input or 'sensitive' in user_input.lower() or '信息泄露' in user_input:
+            scan_types.append('sensitive_info')
+        if 'csrf' in user_input.lower():
+            scan_types.append('csrf')
+        if '重定向' in user_input or 'redirect' in user_input.lower():
+            scan_types.append('open_redirect')
+        if '全面' in user_input or 'all' in user_input.lower():
+            scan_types = ['all']
+        if not scan_types:
+            scan_types = ['xss', 'sql']
         
         report_format = 'html'
         for fmt in ['markdown', 'json', 'pdf', 'html']:
@@ -561,6 +584,10 @@ class Agent:
             intent.url = 'https://' + intent.url
         
         scan_types = intent.scan_types if intent.scan_types else ['xss', 'sql']
+        
+        if 'all' in scan_types:
+            scan_types = self.tool_registry.get_all_names()
+        
         report_format = intent.auth_info.get('report_format', 'html')
         
         results = []

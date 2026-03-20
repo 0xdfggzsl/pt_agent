@@ -1,12 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
-from enum import Enum
 
-class ScanType(Enum):
+class ScanType:
     XSS = "xss"
     SQL = "sql"
-    BOTH = "both"
+    SSRF = "ssrf"
+    COMMAND_INJECTION = "command_injection"
+    PATH_TRAVERSAL = "path_traversal"
+    XXE = "xxe"
+    SENSITIVE_INFO = "sensitive_info"
+    CSRF = "csrf"
+    OPEN_REDIRECT = "open_redirect"
 
 @dataclass
 class ScanResult:
@@ -94,14 +99,168 @@ class SQLTool(ScannerTool):
         except Exception as e:
             return ScanResult(success=False, scan_type='sql', data=None, error=str(e))
 
+class SSRFDetectorTool(ScannerTool):
+    name = "ssrf_scanner"
+    description = "服务端请求伪造漏洞扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import SSRFDetector
+            
+            detector = SSRFDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='ssrf',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='ssrf', data=None, error=str(e))
+
+class CommandInjectionTool(ScannerTool):
+    name = "command_injection_scanner"
+    description = "命令注入漏洞扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import CommandInjectionDetector
+            
+            detector = CommandInjectionDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='command_injection',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='command_injection', data=None, error=str(e))
+
+class PathTraversalTool(ScannerTool):
+    name = "path_traversal_scanner"
+    description = "路径遍历漏洞扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import PathTraversalDetector
+            
+            detector = PathTraversalDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='path_traversal',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='path_traversal', data=None, error=str(e))
+
+class XXETool(ScannerTool):
+    name = "xxe_scanner"
+    description = "XXE 漏洞扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import XXEDetector
+            
+            detector = XXEDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='xxe',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='xxe', data=None, error=str(e))
+
+class SensitiveInfoTool(ScannerTool):
+    name = "sensitive_info_scanner"
+    description = "敏感信息泄露扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import SensitiveInfoDetector
+            
+            detector = SensitiveInfoDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='sensitive_info',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='sensitive_info', data=None, error=str(e))
+
+class CSRFDetectorTool(ScannerTool):
+    name = "csrf_scanner"
+    description = "CSRF 漏洞扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import CSRFDetector
+            
+            detector = CSRFDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='csrf',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='csrf', data=None, error=str(e))
+
+class OpenRedirectTool(ScannerTool):
+    name = "open_redirect_scanner"
+    description = "开放重定向漏洞扫描器"
+    
+    async def scan(self, url: str, **kwargs) -> ScanResult:
+        try:
+            from unified_agent.scanner.detectors.security import OpenRedirectDetector
+            
+            detector = OpenRedirectDetector(timeout=kwargs.get('timeout', 30))
+            result = await detector.scan(url)
+            
+            return ScanResult(
+                success=True,
+                scan_type='open_redirect',
+                data={'summary': detector.get_summary(), 'findings': result['findings']},
+                report_path=''
+            )
+        except Exception as e:
+            return ScanResult(success=False, scan_type='open_redirect', data=None, error=str(e))
+
+ALL_SCANNERS = {
+    'xss': XSSTool(),
+    'sql': SQLTool(),
+    'ssrf': SSRFDetectorTool(),
+    'command_injection': CommandInjectionTool(),
+    'path_traversal': PathTraversalTool(),
+    'xxe': XXETool(),
+    'sensitive_info': SensitiveInfoTool(),
+    'csrf': CSRFDetectorTool(),
+    'open_redirect': OpenRedirectTool(),
+}
+
+ALL_VULN_TYPES = list(ALL_SCANNERS.keys())
+
 class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ScannerTool] = {}
         self.register_default_tools()
     
     def register_default_tools(self):
-        self._tools['xss_scanner'] = XSSTool()
-        self._tools['sql_scanner'] = SQLTool()
+        for name, tool in ALL_SCANNERS.items():
+            self._tools[name] = tool
     
     def get(self, name: str) -> ScannerTool:
         return self._tools.get(name)
