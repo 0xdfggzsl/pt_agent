@@ -1,18 +1,35 @@
 import asyncio
 import time
 from typing import Dict, List, Optional
-from .scanner.crawler import WebCrawler
-from .scanner.detector import XSSDetector
-from .scanner.reporter import ReportGenerator
+from scanner.crawler import WebCrawler
+from scanner.detector import XSSDetector
+from scanner.reporter import ReportGenerator
 from urllib.parse import urlparse
 
 class ScanEngine:
-    def __init__(self, target_url: str, depth: int = 3, timeout: int = 30, output_dir: str = './reports'):
+    def __init__(self, target_url: str, depth: int = 3, timeout: int = 30, output_dir: str = './reports',
+                 cookies: Optional[str] = None,
+                 bearer_token: Optional[str] = None,
+                 login_url: Optional[str] = None,
+                 username: Optional[str] = None,
+                 password: Optional[str] = None):
         self.target_url = target_url
         self.depth = depth
         self.timeout = timeout
         self.output_dir = output_dir
-        self.crawler = WebCrawler(target_url, depth, timeout)
+        self.cookies = cookies
+        self.bearer_token = bearer_token
+        self.login_url = login_url
+        self.username = username
+        self.password = password
+        self.crawler = WebCrawler(
+            target_url, depth, timeout,
+            cookies=cookies,
+            bearer_token=bearer_token,
+            login_url=login_url,
+            username=username,
+            password=password
+        )
         self.detector = XSSDetector(timeout)
         self.reporter = ReportGenerator()
         self.findings: List[Dict] = []
@@ -26,6 +43,9 @@ class ScanEngine:
         await self.detector.init_client()
         
         try:
+            if self.login_url and self.username and self.password:
+                await self.crawler.login()
+            
             crawl_result = await self.crawler.crawl(self.target_url)
             
             get_params = await self.crawler.get_input_params(self.target_url)
