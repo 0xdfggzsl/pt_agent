@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL注入漏洞扫描报告</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; padding: 30px; border-radius: 10px; margin-bottom: 20px; }
+        .header h1 { font-size: 28px; margin-bottom: 10px; }
+        .header .meta { opacity: 0.9; font-size: 14px; }
+        .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-card .label { color: #666; font-size: 14px; margin-bottom: 5px; }
+        .stat-card .value { font-size: 32px; font-weight: bold; }
+        .stat-card.total .value { color: #333; }
+        .stat-card.high .value { color: #dc3545; }
+        .stat-card.medium .value { color: #ffc107; }
+        .stat-card.low .value { color: #17a2b8; }
+        .findings { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow: hidden; }
+        .finding { border-left: 4px solid; padding: 20px; border-bottom: 1px solid #eee; }
+        .finding:last-child { border-bottom: none; }
+        .finding.high { border-color: #dc3545; }
+        .finding.medium { border-color: #ffc107; }
+        .finding.low { border-color: #17a2b8; }
+        .finding-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px; }
+        .finding-url { font-family: monospace; font-size: 14px; color: #333; word-break: break-all; }
+        .severity-badge { padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; }
+        .severity-badge.high { background: #dc3545; }
+        .severity-badge.medium { background: #ffc107; color: #333; }
+        .severity-badge.low { background: #17a2b8; }
+        .finding-detail { font-size: 14px; color: #666; margin: 5px 0; }
+        .finding-payload { background: #f8f9fa; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 13px; margin-top: 10px; word-break: break-all; }
+        .finding-desc { color: #333; margin-top: 10px; }
+        .no-findings { text-align: center; padding: 60px; color: #28a745; font-size: 18px; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+        .type-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; background: #6c757d; color: white; margin-left: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>SQL注入漏洞扫描报告</h1>
+            <div class="meta">
+                <p>目标: {{ target_url }}</p>
+                <p>扫描时间: {{ scan_time }}</p>
+                <p>扫描耗时: {{ "%.2f"|format(scan_duration) }}秒</p>
+            </div>
+        </div>
+        
+        <div class="summary">
+            <div class="stat-card total">
+                <div class="label">漏洞总数</div>
+                <div class="value">{{ summary.total }}</div>
+            </div>
+            <div class="stat-card high">
+                <div class="label">高危</div>
+                <div class="value">{{ summary.high }}</div>
+            </div>
+            <div class="stat-card medium">
+                <div class="label">中危</div>
+                <div class="value">{{ summary.medium }}</div>
+            </div>
+            <div class="stat-card low">
+                <div class="label">低危</div>
+                <div class="value">{{ summary.low }}</div>
+            </div>
+        </div>
+        
+        {% if findings %}
+        <div class="findings">
+            {% for finding in findings %}
+            <div class="finding {{ finding.severity }}">
+                <div class="finding-header">
+                    <div class="finding-url">{{ finding.url }}<span class="type-badge">{{ finding.type }}</span></div>
+                    <span class="severity-badge {{ finding.severity }}">
+                        {% if finding.severity == 'high' %}高危{% elif finding.severity == 'medium' %}中危{% else %}低危{% endif %}
+                    </span>
+                </div>
+                <div class="finding-detail"><strong>参数:</strong> {{ finding.param }}</div>
+                <div class="finding-detail"><strong>类型:</strong> {{ finding.type }}</div>
+                <div class="finding-detail"><strong>Payload:</strong></div>
+                <div class="finding-payload">{{ finding.payload }}</div>
+                <div class="finding-desc">{{ finding.description }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="findings">
+            <div class="no-findings">未发现SQL注入漏洞</div>
+        </div>
+        {% endif %}
+        
+        <div class="footer">
+            <p>SQL Scanner Agent v1.0 | 仅用于安全测试</p>
+        </div>
+    </div>
+</body>
+</html>
